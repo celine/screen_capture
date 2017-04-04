@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">ScreenRecorder</string>
+    <string name="start_recording">Start recording</string>
+    <string name="stop_recording">Stop Recording</string>
+    <string name="get_record_screen">Get record screen</string>
+    <string name="file_not_found">Video file not found</string>
+</resources>
