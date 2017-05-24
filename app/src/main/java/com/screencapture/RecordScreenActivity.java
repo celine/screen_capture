@@ -18,6 +18,7 @@ import android.os.RemoteException;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.Surface;
+import android.view.View;
 import android.widget.Toast;
 
 /**
@@ -25,39 +26,52 @@ import android.widget.Toast;
  */
 
 public class RecordScreenActivity extends AppCompatActivity implements Constants {
-    int REQUEST_CODE = 101;
-    MediaProjectionManager mediaProjectionManager;
-    MediaProjection projection;
-    int densityDpi;
-    int DISPLAY_WIDTH = 1080;
-    int DISPLAY_HEIGHT = 720;
-    boolean mBound = false;
-    ServiceConnection mConnection;
-    VirtualDisplay mVirtualDisplay;
-    Surface mediaSureface;
+    private int REQUEST_CODE = 101;
+    private MediaProjectionManager mediaProjectionManager;
+    private MediaProjection projection;
+    private int densityDpi;
+    private int DISPLAY_WIDTH = 1080;
+    private int DISPLAY_HEIGHT = 960;
+    private boolean mBound = false;
+    private ServiceConnection mConnection;
+    private VirtualDisplay mVirtualDisplay;
+    private Surface mediaSureface;
+    private Messenger mService;
+    private Object connectLocker = new Object();
     private static final String LOG_TAG = RecordScreenActivity.class.getSimpleName();
-    Messenger mMessenger = new Messenger(new Handler() {
+    private View startRecord;
+    private Messenger mMessenger = new Messenger(new Handler() {
         @Override
         public void handleMessage(Message msg) {
             Log.d(LOG_TAG, "receive " + msg.what);
             switch (msg.what) {
-                case SET_SURFACE:
-                    Surface mediaSureface = (Surface) msg.obj;
-                    startRecord(mediaSureface);
-                    break;
                 case STOP_RECORD:
                     stopRecord();
+                    break;
+                case MSG_REGISTER_ACK_NOT_READY:
+                    enableRecordingBtn(false);
+                    break;
+                case MSG_REGISTER_ACK_READY:
+                    Surface mediaSureface = (Surface) msg.obj;
+                    setSurface(mediaSureface);
+                    enableRecordingBtn(true);
                     break;
             }
         }
     });
 
+    private void enableRecordingBtn(boolean enable) {
+        startRecord.setEnabled(enable);
+    }
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        float factor = 0.5f;
+        setContentView(R.layout.main_activity);
+        float factor = 0.4f;
         DISPLAY_WIDTH = (int) (getResources().getDisplayMetrics().widthPixels * factor);
         DISPLAY_HEIGHT = (int) (getResources().getDisplayMetrics().heightPixels * factor);
+        Log.d(LOG_TAG, "width " + DISPLAY_WIDTH);
         Intent intent = new Intent();
         intent.putExtra(SCREEN_WIDTH, DISPLAY_WIDTH);
         intent.putExtra(SCREEN_HEIGHT, DISPLAY_HEIGHT);
@@ -65,8 +79,24 @@ public class RecordScreenActivity extends AppCompatActivity implements Constants
         startService(intent);
         mediaProjectionManager = (MediaProjectionManager) getApplicationContext().getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         densityDpi = getResources().getDisplayMetrics().densityDpi;
-
+        startRecord = findViewById(R.id.startRecord);
+        startRecord.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                setupDisplay();
+            }
+        });
         doBindService();
+    }
+
+    private void setupDisplay() {
+
+        Toast.makeText(getBaseContext(), R.string.start_recording, Toast.LENGTH_SHORT).show();
+        if (projection == null) {
+            startActivityForResult(mediaProjectionManager.createScreenCaptureIntent(), REQUEST_CODE);
+        }
+
+
     }
 
 
@@ -93,7 +123,6 @@ public class RecordScreenActivity extends AppCompatActivity implements Constants
         }
     }
 
-    Messenger mService;
 
     @Override
     protected void onStop() {
@@ -105,8 +134,10 @@ public class RecordScreenActivity extends AppCompatActivity implements Constants
         @Override
         public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
             Log.d(LOG_TAG, "onServiceConnected");
-            mService = new Messenger(iBinder);
-
+            synchronized (connectLocker) {
+                mService = new Messenger(iBinder);
+                connectLocker.notify();
+            }
             Message msg = Message.obtain(null, REGISTER_MESSENGER);
             msg.replyTo = mMessenger;
             try {
@@ -114,11 +145,15 @@ public class RecordScreenActivity extends AppCompatActivity implements Constants
             } catch (RemoteException e) {
                 Log.e(LOG_TAG, "error", e);
             }
+
         }
 
         @Override
         public void onServiceDisconnected(ComponentName componentName) {
-            mService = null;
+            synchronized (connectLocker) {
+                Log.d(LOG_TAG,"onServiceDisconnected");
+                mService = null;
+            }
         }
     }
 
@@ -131,7 +166,7 @@ public class RecordScreenActivity extends AppCompatActivity implements Constants
                 projection.registerCallback(mMediaCallback, null);
                 mVirtualDisplay = projection.createVirtualDisplay("virtualDisplay", DISPLAY_WIDTH, DISPLAY_HEIGHT, densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, mediaSureface, null, null);
                 try {
-                    mService.send(Message.obtain(null, RECORD_READY));
+                    mService.send(Message.obtain(null, START_RECORD));
                 } catch (RemoteException e) {
                     Log.e(LOG_TAG, "error", e);
                 }
@@ -140,12 +175,9 @@ public class RecordScreenActivity extends AppCompatActivity implements Constants
         }
     }
 
-    private void startRecord(Surface surface) {
-        Toast.makeText(getBaseContext(), R.string.start_recording, Toast.LENGTH_SHORT).show();
+    private void setSurface(Surface surface) {
         mediaSureface = surface;
-        if (projection == null) {
-            startActivityForResult(mediaProjectionManager.createScreenCaptureIntent(), REQUEST_CODE);
-        }
+
 
     }
 

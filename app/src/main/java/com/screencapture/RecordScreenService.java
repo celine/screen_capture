@@ -14,11 +14,12 @@ import android.os.RemoteException;
 import android.support.annotation.Nullable;
 import android.util.Log;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.Toast;
+
+import com.screencapture.videoplayer.VideoPlayerActivity;
 
 import java.io.File;
 import java.io.IOException;
@@ -32,15 +33,14 @@ import java.util.List;
  */
 
 public class RecordScreenService extends Service implements View.OnClickListener, Constants {
-    private final Messenger mMessenger = new Messenger(new IncomingHandler());
+    private Messenger mMessenger;
     List<Messenger> messengerList = new ArrayList<>();
     private static final String LOG_TAG = RecordScreenService.class.getSimpleName();
     MediaRecorder mMediaRecorder;
     int DISPLAY_WIDTH = 1080;
     int DISPLAY_HEIGHT = 1920;
     Handler uiHandler;
-    int viewState = VIEW_STATE_NOT_READY;
-    private static final int VIEW_STATE_NOT_READY = 0;
+    int viewState = VIEW_STATE_READY;
     private static final int VIEW_STATE_READY = 1;
     private static final int VIEW_STATE_START = 2;
     String videoPath;
@@ -48,24 +48,23 @@ public class RecordScreenService extends Service implements View.OnClickListener
     WindowManager wm;
 
     public void setViewState(int state) {
-        if (mView.getVisibility() != View.VISIBLE) {
-            mView.setVisibility(View.VISIBLE);
-        }
+
         if (state == viewState) {
             return;
         }
         viewState = state;
 
         switch (state) {
-            case VIEW_STATE_NOT_READY:
-                mView.setText(R.string.get_record_screen);
-                break;
             case VIEW_STATE_READY:
+                mView.setVisibility(View.VISIBLE);
                 mView.setText(R.string.start_recording);
                 break;
             case VIEW_STATE_START:
+                mView.setVisibility(View.VISIBLE);
                 mView.setText(R.string.stop_recording);
                 break;
+            default:
+                mView.setVisibility(View.GONE);
         }
 
 
@@ -79,20 +78,20 @@ public class RecordScreenService extends Service implements View.OnClickListener
                 case REGISTER_MESSENGER:
                     Log.d(LOG_TAG, "register");
                     messengerList.add(msg.replyTo);
-                    if (viewState == VIEW_STATE_NOT_READY) {
-                        setViewState(VIEW_STATE_READY);
+                    if (viewState == VIEW_STATE_READY && videoPath != null) {
+                        sendCatchException(Message.obtain(null, MSG_REGISTER_ACK_READY, mMediaRecorder.getSurface()), msg.replyTo);
+                    } else {
+                        sendCatchException(Message.obtain(null, MSG_REGISTER_ACK_NOT_READY, null), msg.replyTo);
                     }
                     break;
                 case UNREGISTER_MESSENGER:
                     Log.d(LOG_TAG, "unregister");
 
                     messengerList.remove(msg.replyTo);
-                    if (messengerList.size() == 0 && viewState == VIEW_STATE_READY) {
-                        setViewState(VIEW_STATE_NOT_READY);
-                    }
                     break;
-                case RECORD_READY:
+                case START_RECORD:
                     Log.d(LOG_TAG, "start recording");
+                    setViewState(VIEW_STATE_START);
                     mMediaRecorder.start();
                     break;
                 case SEND_TO_MESSENGER:
@@ -114,8 +113,9 @@ public class RecordScreenService extends Service implements View.OnClickListener
     @Override
     public void onCreate() {
         super.onCreate();
+
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.TYPE_SYSTEM_ALERT, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                WindowManager.LayoutParams.TYPE_TOAST, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
                 WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 PixelFormat.TRANSLUCENT);
@@ -124,12 +124,16 @@ public class RecordScreenService extends Service implements View.OnClickListener
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         params.width = WindowManager.LayoutParams.WRAP_CONTENT;
         params.height = WindowManager.LayoutParams.WRAP_CONTENT;
-        mView = new Button(getBaseContext());
-        setViewState(VIEW_STATE_NOT_READY);
+
+        mView = new Button(this);
+        setViewState(VIEW_STATE_READY);
         mView.setOnTouchListener(new ViewTouchListener(getBaseContext(), wm, params));
         mView.setOnClickListener(this);
         wm.addView(mView, params);
         uiHandler = new Handler();
+
+        videoPath = initRecorder();
+        mMessenger = new Messenger(new IncomingHandler());
     }
 
     @Override
@@ -140,7 +144,9 @@ public class RecordScreenService extends Service implements View.OnClickListener
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-
+        if (intent == null) {
+            return START_STICKY;
+        }
         DISPLAY_WIDTH = intent.getIntExtra(SCREEN_WIDTH, DISPLAY_WIDTH);
         DISPLAY_HEIGHT = intent.getIntExtra(SCREEN_HEIGHT, DISPLAY_HEIGHT);
         Log.d(LOG_TAG, "width " + DISPLAY_WIDTH + " height " + DISPLAY_HEIGHT);
@@ -158,15 +164,6 @@ public class RecordScreenService extends Service implements View.OnClickListener
     public void onClick(View view) {
         try {
             switch (viewState) {
-                case VIEW_STATE_NOT_READY:
-                    Intent intent = new Intent(getApplicationContext(), RecordScreenActivity.class);
-                    intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(intent);
-                    return;
-                case VIEW_STATE_READY:
-                    videoPath = initRecorder();
-                    setViewState(VIEW_STATE_START);
-                    break;
                 case VIEW_STATE_START:
                     mMessenger.send(Message.obtain(null, SEND_TO_MESSENGER, STOP_RECORD, 0, null));
                     stopRecord();
@@ -195,24 +192,28 @@ public class RecordScreenService extends Service implements View.OnClickListener
             mMediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
             videoPath = Environment
                     .getExternalStoragePublicDirectory(Environment
-                            .DIRECTORY_DOWNLOADS) + String.format("/%s_video.mp4", new SimpleDateFormat("yyMMddHHmmssZ").format(new Date()));
-            mMediaRecorder.setOutputFile(videoPath);
+                            .DIRECTORY_DOWNLOADS) + String.format("/%s_video.3gpp", new SimpleDateFormat("yyMMddHHmmssZ").format(new Date()));
+           Log.d(LOG_TAG,"videoPath " + videoPath);
+            File file = new File(videoPath);
+            if(!file.exists()){
+                file.createNewFile();
+            }
+            Log.d(LOG_TAG,"file path " + file.exists());
+            mMediaRecorder.setOutputFile(file.getAbsolutePath());
+            Log.d(LOG_TAG, "video size " + DISPLAY_WIDTH + " " + DISPLAY_HEIGHT);
             mMediaRecorder.setVideoSize(DISPLAY_WIDTH, DISPLAY_HEIGHT);
             mMediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
             mMediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_NB);
-            mMediaRecorder.setVideoEncodingBitRate(512 * 1000);
-            mMediaRecorder.setVideoFrameRate(30);
-            //int rotation = wm.getDefaultDisplay().getRotation();
+            mMediaRecorder.setVideoFrameRate(100);
+            mMediaRecorder.setVideoEncodingBitRate(4096 * 1000);
+
+            int rotation = wm.getDefaultDisplay().getRotation();
             int orientation = 0;
-            mMediaRecorder.setOrientationHint(orientation);
+            mMediaRecorder.setOrientationHint(rotation);
             mMediaRecorder.prepare();
-            try {
-                mMessenger.send(Message.obtain(null, SEND_TO_MESSENGER, SET_SURFACE, 0, mMediaRecorder.getSurface()));
-            } catch (RemoteException e) {
-                e.printStackTrace();
-            }
+            Log.d(LOG_TAG, "prepare");
         } catch (IOException e) {
-            e.printStackTrace();
+            Log.e(LOG_TAG, "error", e);
         }
         return videoPath;
     }
@@ -224,11 +225,18 @@ public class RecordScreenService extends Service implements View.OnClickListener
     }
 
     private void launchPlayer(String videoPath) {
-        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(videoPath));
+        Intent intent = new Intent(getApplicationContext(), VideoPlayerActivity.class);
         intent.setDataAndType(Uri.parse(videoPath), "video/mp4");
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         Log.d(LOG_TAG, "start video " + videoPath);
         startActivity(intent);
     }
 
+    void sendCatchException(Message message, Messenger messenger) {
+        try {
+            messenger.send(message);
+        } catch (RemoteException e) {
+            Log.e(LOG_TAG, "error", e);
+        }
+    }
 }

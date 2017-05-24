@@ -4,4 +4,6 @@
     <string name="stop_recording">Stop Recording</string>
     <string name="get_record_screen">Get record screen</string>
     <string name="file_not_found">Video file not found</string>
+    <string name="description">Click button to start recording</string>
+    <string name="start">Start</string>
 </resources>
